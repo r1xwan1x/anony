@@ -1,11 +1,6 @@
-// AnonChat v6 — FULL classic build
-// Features: rooms, replies, edit/delete, pin/unpin, drag-drop uploads, voice note, admin panel, SQLite persistence
-// Uses custom Socket.IO client path (/realtime) to avoid ad-blockers that block /socket.io
-//
-// Install deps (one line):
-// npm i express socket.io multer nanoid sanitize-html rate-limiter-flexible leo-profanity useragent geoip-lite better-sqlite3
-//
-// Start: node server.js
+// AnonChat v6 — FULL classic server (Railway-ready, single-volume storage)
+// Features: replies, edit/delete, pin/unpin, drag-drop uploads, voice notes, admin panel, SQLite persistence
+// Socket.IO served at /realtime to avoid ad-blockers blocking /socket.io
 
 const path = require("path");
 const fs = require("fs");
@@ -22,6 +17,7 @@ const useragent = require("useragent");
 const geoip = require("geoip-lite");
 const Database = require("better-sqlite3");
 
+// ---- Config
 const PORT = process.env.PORT || 3000;
 const ADMIN_KEY = process.env.ADMIN_KEY || "letmein";
 const FILTER_MODE = process.env.FILTER_MODE || "soft"; // 'soft' cleans, 'block' rejects
@@ -29,6 +25,14 @@ const SAVE_RAW_IP = process.env.SAVE_RAW_IP !== "0";   // set to 0 to hash IPs
 const IP_SALT = process.env.IP_SALT || "change-me";
 const MAX_FILE_MB = Number(process.env.MAX_FILE_MB || 12);
 
+// ---- Single-volume storage (works local + Railway)
+const STORAGE_ROOT = process.env.STORAGE_ROOT || __dirname;                 // e.g. /app/storage on Railway
+const DATA_DIR     = process.env.DATA_DIR     || path.join(STORAGE_ROOT, "data");
+const UPLOADS_DIR  = process.env.UPLOADS_DIR  || path.join(STORAGE_ROOT, "uploads");
+fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+// ---- App & socket
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -38,14 +42,12 @@ const io = new Server(server, {
   cors: { origin: true }
 });
 
-// Helpers
+// ---- Helpers
 const nanoid = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 8);
 const uid = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 10);
-const DATA_DIR = path.join(__dirname, "data");
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 const DB_PATH = path.join(DATA_DIR, "anonchat.db");
 
-// DB init & migrations
+// ---- DB init & migrations
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = wal");
 db.exec(`
@@ -86,45 +88,43 @@ CREATE TABLE IF NOT EXISTS pins(
 );
 `);
 
-const insertRoom = db.prepare("INSERT OR IGNORE INTO rooms(roomId, topic, capacity, locked, createdTs) VALUES (?, ?, ?, ?, ?)");
-const updateRoom = db.prepare("UPDATE rooms SET topic=?, capacity=?, locked=? WHERE roomId=?");
-const selectRoom = db.prepare("SELECT * FROM rooms WHERE roomId=?");
-const listRooms = db.prepare("SELECT roomId, topic, capacity, locked FROM rooms ORDER BY createdTs DESC LIMIT 200");
+const insertRoom   = db.prepare("INSERT OR IGNORE INTO rooms(roomId, topic, capacity, locked, createdTs) VALUES (?, ?, ?, ?, ?)");
+const updateRoom   = db.prepare("UPDATE rooms SET topic=?, capacity=?, locked=? WHERE roomId=?");
+const selectRoom   = db.prepare("SELECT * FROM rooms WHERE roomId=?");
+const listRooms    = db.prepare("SELECT roomId, topic, capacity, locked FROM rooms ORDER BY createdTs DESC LIMIT 200");
 
-const insertMsg = db.prepare(`INSERT INTO messages(id, roomId, userId, name, text, files, replyTo, ts, deleted, editedTs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)`);
-const markDeleted = db.prepare(`UPDATE messages SET deleted=1 WHERE id=?`);
-const updateMsgText = db.prepare(`UPDATE messages SET text=?, editedTs=? WHERE id=?`);
+const insertMsg    = db.prepare(`INSERT INTO messages(id, roomId, userId, name, text, files, replyTo, ts, deleted, editedTs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)`);
+const markDeleted  = db.prepare(`UPDATE messages SET deleted=1 WHERE id=?`);
+const updateMsgTxt = db.prepare(`UPDATE messages SET text=?, editedTs=? WHERE id=?`);
 const selectRecent = db.prepare(`SELECT * FROM messages WHERE roomId=? AND deleted=0 ORDER BY ts DESC LIMIT ?`);
-const getMessage = db.prepare(`SELECT * FROM messages WHERE id=?`);
+const getMessage   = db.prepare(`SELECT * FROM messages WHERE id=?`);
 
-const insertAudit = db.prepare(`INSERT INTO audit(ts, event, roomId, userId, anonName, ip, ua, geo) VALUES (?,?,?,?,?,?,?,?)`);
+const insertAudit  = db.prepare(`INSERT INTO audit(ts, event, roomId, userId, anonName, ip, ua, geo) VALUES (?,?,?,?,?,?,?,?)`);
 
-const pinAdd = db.prepare(`INSERT OR REPLACE INTO pins(roomId, messageId, pinnedTs) VALUES(?, ?, ?)`);
-const pinRemove = db.prepare(`DELETE FROM pins WHERE messageId=?`);
-const pinsForRoom = db.prepare(`SELECT messageId FROM pins WHERE roomId=? ORDER BY pinnedTs DESC LIMIT 25`);
+const pinAdd       = db.prepare(`INSERT OR REPLACE INTO pins(roomId, messageId, pinnedTs) VALUES(?, ?, ?)`);
+const pinRemove    = db.prepare(`DELETE FROM pins WHERE messageId=?`);
+const pinsForRoom  = db.prepare(`SELECT messageId FROM pins WHERE roomId=? ORDER BY pinnedTs DESC LIMIT 25`);
 
-// Runtime state
+// ---- Runtime
 const ROOM_CAP_DEFAULT = 50;
 const rooms = new Map(); // roomId -> { members:Set<socketId>, topic, capacity, locked, ownerUserId }
-const bans = new Map();  // ip -> { until, reason }
+const bans  = new Map(); // ip -> { until, reason }
 const mutes = new Map(); // key -> { until, reason }
 
-// Profanity
+// ---- Safety
 leo.loadDictionary('en');
 
-// Static
+// ---- Static + JSON
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
-app.use("/uploads", express.static(path.join(__dirname, "uploads"), { maxAge: "1d" }));
+app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "1d" }));
 
-// Health
+// ---- Health
 app.get("/health", (req,res)=>res.json({ ok:true, uptime: process.uptime() }));
 
-// Uploads
-const uploadsDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
+// ---- Uploads (multer)
 const storage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, uploadsDir),
+  destination: (_, __, cb) => cb(null, UPLOADS_DIR),
   filename: (_, file, cb) => {
     const safe = (file.originalname || "file").replace(/[^\w.\-\s\(\)]/g, "_");
     const ext = path.extname(safe);
@@ -142,7 +142,7 @@ app.post("/api/upload", upload.array("files", 4), (req, res) => {
   res.json({ files: items });
 });
 
-// Helpers
+// ---- Utils
 function hashIP(ip) { return crypto.createHash("sha256").update(ip + (process.env.IP_SALT || "salt")).digest("hex"); }
 function now() { return Date.now(); }
 function roomRuntime(roomId) {
@@ -155,13 +155,13 @@ function roomRuntime(roomId) {
   return r;
 }
 
-// Admin gate
+// ---- Admin auth middleware
 function requireAdmin(req, res, next) {
   if ((req.query.key || req.headers["x-admin-key"]) !== ADMIN_KEY) return res.status(401).json({ ok:false, error:"unauthorized" });
   next();
 }
 
-// Admin APIs
+// ---- Admin APIs
 app.get("/admin/state", requireAdmin, (req, res) => {
   const dbRooms = listRooms.all();
   const bansArr = Array.from(bans.entries()).map(([ip,b])=>({ip,until:b.until,reason:b.reason}));
@@ -217,11 +217,11 @@ app.post("/admin/unpin", requireAdmin, (req, res) => {
   res.json({ ok:true });
 });
 
-// Limits
-const ipLimiter = new RateLimiterMemory({ points: 12, duration: 10 });
+// ---- Rate limits
+const ipLimiter   = new RateLimiterMemory({ points: 12, duration: 10 });
 const userLimiter = new RateLimiterMemory({ points: 10, duration: 10 });
 
-// Socket.io
+// ---- Socket.io
 io.on("connection", (socket) => {
   const forwarded = socket.handshake.headers["x-forwarded-for"];
   const remoteAddr = socket.handshake.address;
@@ -235,12 +235,12 @@ io.on("connection", (socket) => {
   if (ban && now() < ban.until) { socket.disconnect(true); return; }
   if (ban && now() >= ban.until) bans.delete(ip);
 
-  // session identity
+  // persistent identity
   const persistedId = socket.handshake.auth?.persistedId;
   const userId = (typeof persistedId === "string" && persistedId.length >= 10) ? String(persistedId).slice(0,32) : uid();
   socket.userId = userId;
 
-  // room join (create if hinted)
+  // room join / create
   const roomHint = socket.handshake.auth?.roomHint;
   const lock = !!socket.handshake.auth?.roomLock;
   const roomId = roomHint || nanoid();
@@ -254,7 +254,7 @@ io.on("connection", (socket) => {
   socket.join(roomId);
   room.members.add(socket.id);
 
-  // history + pins
+  // send context
   const rows = selectRecent.all(roomId, 120).reverse();
   const pinnedIds = pinsForRoom.all(roomId).map(r => r.messageId);
   socket.emit("hello", { roomId, anonName, userId, topic: room.topic, capacity: room.capacity || ROOM_CAP_DEFAULT, locked: room.locked, owner: room.ownerUserId });
@@ -267,12 +267,14 @@ io.on("connection", (socket) => {
   insertAudit.run(now(), "join", roomId, userId, anonName, SAVE_RAW_IP ? ip : hashIP(ip), JSON.stringify(uaInfo), JSON.stringify(geo));
   io.to(roomId).emit("presence", { type: "join", count: room.members.size });
 
+  // nickname
   socket.on("setNick", (nick) => {
     const name = String(nick || "").slice(0, 24).trim();
     if (!name) return;
     socket.nick = sanitizeHtml(name, { allowedTags: [], allowedAttributes: {} });
   });
 
+  // room settings (owner only)
   socket.on("setRoom", ({ topic, capacity, locked }) => {
     if (room.ownerUserId !== userId) return;
     room.topic = String(topic || "").slice(0, 140);
@@ -283,6 +285,7 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("roomUpdate", { topic: room.topic, capacity: room.capacity, locked: room.locked });
   });
 
+  // message
   socket.on("msg", async (payload) => {
     try { await ipLimiter.consume(ip); } catch { socket.emit("errorMsg","Slow down (IP)."); return; }
     try { await userLimiter.consume(userId); } catch { socket.emit("errorMsg","Slow down (user)."); return; }
@@ -302,6 +305,7 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("msg", { ...msg });
   });
 
+  // edit (self)
   socket.on("edit", ({ messageId, text }) => {
     const row = getMessage.get(messageId); if (!row || row.deleted) return;
     if (row.userId !== userId) return;
@@ -310,10 +314,11 @@ io.on("connection", (socket) => {
     if (FILTER_MODE === "block" && leo.check(cleanText)) return;
     if (FILTER_MODE === "soft" && leo.check(cleanText)) cleanText = leo.clean(cleanText);
     const t = now();
-    updateMsgText.run(cleanText, t, messageId);
+    updateMsgTxt.run(cleanText, t, messageId);
     io.to(row.roomId).emit("edited", { messageId, text: cleanText, editedTs: t });
   });
 
+  // pin / unpin (owner)
   socket.on("pin", ({ messageId }) => {
     if (room.ownerUserId !== userId) return;
     const row = getMessage.get(messageId); if (!row || row.deleted) return;
@@ -328,6 +333,7 @@ io.on("connection", (socket) => {
 
   socket.on("typing", () => { socket.to(roomId).emit("typing", { name: socket.nick || ("anon-" + userId.slice(0,5)), userId }); });
 
+  // delete (self)
   socket.on("delete", ({ messageId }) => {
     const row = getMessage.get(messageId);
     if (!row) return;
@@ -348,6 +354,7 @@ io.on("connection", (socket) => {
   });
 });
 
+// ---- Start
 server.listen(PORT, () => {
   console.log(`AnonChat v6 FULL running on http://localhost:${PORT}`);
   console.log(`Health: http://localhost:${PORT}/health`);
