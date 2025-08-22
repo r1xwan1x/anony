@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Anon Rooms</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="logo">🍒 anon rooms</div>
+      <div class="room-info" id="roomInfo">Connecting…</div>
+      <div class="actions">
+        <button id="copyInvite" class="btn small">Copy invite</button>
+        <button id="openSettings" class="btn small ghost">Room</button>
+        <a class="btn small ghost" href="/privacy.html" target="_blank">Privacy</a>
+      </div>
+    </header>
+
+    <main id="chat" class="chat"></main>
+
+    <div class="composer">
+      <form id="composerForm">
+        <div id="replyChip" class="reply-chip" hidden></div>
+        <input id="textInput" class="text" placeholder="Say something…" autocomplete="off" />
+        <label class="upload" title="Attach files (up to 4)">
+          <input id="fileInput" type="file" hidden multiple />
+          📎
+        </label>
+        <button id="emojiBtn" type="button" class="btn small ghost" title="Emoji">😊</button>
+        <button id="recBtn" type="button" class="btn small ghost" title="Record voice">🎤</button>
+        <button class="send" type="submit">Send</button>
+      </form>
+      <div class="typing" id="typing"></div>
+      <div class="hint">Tip: drag & drop files into the chat to attach. You can edit or delete your own messages.</div>
+    </div>
+  </div>
+
+  <dialog id="settingsDlg">
+    <form method="dialog" class="sheet">
+      <h3>Room Settings</h3>
+      <label>Nickname <input id="nickInput" placeholder="Your name (optional)" /></label>
+      <label>Topic <input id="topicInput" placeholder="Room topic" /></label>
+      <label>Capacity <input id="capInput" type="number" min="2" max="200" value="50" /></label>
+      <label><input id="lockInput" type="checkbox" /> Lock room (DM-style)</label>
+      <menu>
+        <button id="saveSettings" class="btn">Save</button>
+        <button value="cancel" class="btn ghost">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="emojiDlg">
+    <div class="sheet">
+      <h3>Emoji</h3>
+      <div id="emojiGrid" class="emoji-grid"></div>
+      <menu><button id="emojiClose" class="btn ghost">Close</button></menu>
+    </div>
+  </dialog>
+
+  <!-- Serve client from our server at a custom path to avoid blockers -->
+  <script src="/realtime/socket.io.js"></script>
+  <script src="/client.js"></script>
+</body>
+</html>

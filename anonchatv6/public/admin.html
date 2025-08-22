@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Admin • Anon Rooms</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/style.css" />
+  <style>
+    body { padding:16px; }
+    table { width:100%; border-collapse:collapse; margin:10px 0 }
+    th,td{ border:1px solid #2a3142; padding:6px 8px; font-size:13px }
+    th{ background:#12151b; text-align:left }
+    input{ background:#0f131a; border:1px solid #1f2838; color:#e6edf3; padding:6px 8px; border-radius:8px }
+    .row{ display:flex; gap:8px; flex-wrap:wrap; align-items:center }
+    .card{ border:1px solid #2a3142; border-radius:12px; padding:10px; margin:10px 0 }
+  </style>
+</head>
+<body>
+  <h2>Admin Panel</h2>
+  <div class="row">
+    <input id="key" placeholder="Admin key" />
+    <input id="roomId" placeholder="Room ID for messages" />
+    <button class="btn small" onclick="load()">Load</button>
+  </div>
+
+  <div class="card"><h3>Rooms</h3><div id="rooms"></div></div>
+  <div class="card">
+    <h3>Bans & Mutes</h3>
+    <div class="row">
+      <input id="banIp" placeholder="IP to ban" />
+      <input id="banMin" placeholder="Minutes" value="60" />
+      <input id="banReason" placeholder="Reason" value="abuse" />
+      <button class="btn small" onclick="ban()">Ban</button>
+      <button class="btn small ghost" onclick="unban()">Unban</button>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <input id="muteKey" placeholder="user:<id> or ip:<addr>" />
+      <input id="muteMin" placeholder="Minutes" value="15" />
+      <input id="muteReason" placeholder="Reason" value="spam" />
+      <button class="btn small" onclick="mute()">Mute</button>
+      <button class="btn small ghost" onclick="unmute()">Unmute</button>
+    </div>
+    <div id="bans"></div><div id="mutes"></div>
+  </div>
+
+  <div class="card"><h3>Recent Messages</h3><div id="msgs"></div></div>
+
+<script>
+let key = "";
+async function load(){
+  key = document.getElementById('key').value.trim();
+  const r = await fetch('/admin/state?key='+encodeURIComponent(key));
+  const d = await r.json();
+  if(!d.ok){ alert('Auth failed'); return; }
+  document.getElementById('rooms').innerHTML =
+    '<table><tr><th>Room</th><th>Members</th><th>Topic</th><th>Capacity</th><th>Locked</th></tr>'+
+    d.rooms.map(r=>`<tr><td>${r.roomId}</td><td>${r.members}</td><td>${r.topic||''}</td><td>${r.capacity}</td><td>${r.locked?'yes':'no'}</td></tr>`).join('')+
+    '</table>';
+  document.getElementById('bans').innerHTML =
+    '<h4>Bans</h4><table><tr><th>IP</th><th>Until</th><th>Reason</th></tr>'+
+    d.bans.map(b=>`<tr><td>${b.ip}</td><td>${new Date(b.until).toLocaleString()}</td><td>${b.reason}</td></tr>`).join('')+
+    '</table>';
+  document.getElementById('mutes').innerHTML =
+    '<h4>Mutes</h4><table><tr><th>Key</th><th>Until</th><th>Reason</th></tr>'+
+    d.mutes.map(b=>`<tr><td>${b.key}</td><td>${new Date(b.until).toLocaleString()}</td><td>${b.reason}</td></tr>`).join('')+
+    '</table>';
+
+  const roomId = document.getElementById('roomId').value.trim();
+  if(roomId){
+    const r2 = await fetch('/admin/messages?roomId='+encodeURIComponent(roomId)+'&key='+encodeURIComponent(key));
+    const d2 = await r2.json();
+    if(d2.ok){
+      document.getElementById('msgs').innerHTML =
+        '<table><tr><th>Time</th><th>User</th><th>Text</th><th>Actions</th></tr>'+
+        d2.items.map(m=>`<tr><td>${new Date(m.ts).toLocaleString()}</td><td>${m.name} (${m.userId})</td><td>${(m.text||'').replace(/</g,'&lt;')}</td><td><button class="btn small" onclick="delMsg('${roomId}','${m.id}')">Delete</button><button class="btn small ghost" onclick="pinMsg('${roomId}','${m.id}')">Pin</button></td></tr>`).join('')+
+        '</table>';
+    }
+  }
+}
+async function ban(){ const ip=document.getElementById('banIp').value.trim(); const minutes=+document.getElementById('banMin').value.trim()||60; const reason=document.getElementById('banReason').value.trim();
+  const r=await fetch('/admin/ban?key='+encodeURIComponent(key),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,minutes,reason})}); const d=await r.json(); if(d.ok) load(); else alert('Ban failed');}
+async function unban(){ const ip=document.getElementById('banIp').value.trim();
+  const r=await fetch('/admin/unban?key='+encodeURIComponent(key),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip})}); const d=await r.json(); if(d.ok) load(); else alert('Unban failed');}
+async function mute(){ const v=document.getElementById('muteKey').value.trim(); const minutes=+document.getElementById('muteMin').value.trim()||15; const reason=document.getElementById('muteReason').value.trim();
+  const r=await fetch('/admin/mute?key='+encodeURIComponent(key),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:v,minutes,reason})}); const d=await r.json(); if(d.ok) load(); else alert('Mute failed');}
+async function unmute(){ const v=document.getElementById('muteKey').value.trim();
+  const r=await fetch('/admin/unmute?key='+encodeURIComponent(key),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:v})}); const d=await r.json(); if(d.ok) load(); else alert('Unmute failed');}
+async function delMsg(roomId, id){ const r=await fetch('/admin/delete?key='+encodeURIComponent(key),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({roomId, messageId:id})}); const d=await r.json(); if(d.ok) load(); else alert('Delete failed');}
+async function pinMsg(roomId, id){ const r=await fetch('/admin/pin?key='+encodeURIComponent(key),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({roomId, messageId:id})}); const d=await r.json(); if(d.ok) alert('Pinned'); else alert('Pin failed');}
+</script>
+</body>
+</html>
