@@ -10,7 +10,6 @@ const http = require("http");
 const { Server } = require("socket.io");
 const multer = require("multer");
 const sanitizeHtml = require("sanitize-html");
-const { customAlphabet } = require("nanoid");
 const { RateLimiterMemory } = require("rate-limiter-flexible");
 const leo = require("leo-profanity");
 const useragent = require("useragent");
@@ -42,12 +41,18 @@ const io = new Server(server, {
   cors: { origin: true }
 });
 
-// ---- Helpers
-const nanoid = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 8);
-const uid = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 10);
-const DB_PATH = path.join(DATA_DIR, "anonchat.db");
+// ---- Tiny ID helpers (replacement for nanoid)
+function makeId(alphabet, size) {
+  const bytes = crypto.randomBytes(size);
+  let id = "";
+  for (let i = 0; i < size; i++) id += alphabet[bytes[i] % alphabet.length];
+  return id;
+}
+const nanoID = () => makeId("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 8);
+const uid    = () => makeId("abcdefghijklmnopqrstuvwxyz0123456789", 10);
 
-// ---- DB init & migrations
+// ---- DB
+const DB_PATH = path.join(DATA_DIR, "anonchat.db");
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = wal");
 db.exec(`
@@ -243,7 +248,7 @@ io.on("connection", (socket) => {
   // room join / create
   const roomHint = socket.handshake.auth?.roomHint;
   const lock = !!socket.handshake.auth?.roomLock;
-  const roomId = roomHint || nanoid();
+  const roomId = roomHint || nanoID();
   insertRoom.run(roomId, "", ROOM_CAP_DEFAULT, lock ? 1 : 0, now());
   const room = roomRuntime(roomId);
   const firstJoin = room.members.size === 0;
